@@ -89,8 +89,23 @@ void gpu_compute_opls_dihedral_forces_kernel(Scalar4* d_force,
                                                  const group_storage<4> *tlist,
                                                  const unsigned int *dihedral_ABCD,
                                                  const unsigned int pitch,
-                                                 const unsigned int *n_dihedrals_list)
+                                                 const unsigned int *n_dihedrals_list,
+                                                 unsigned int n_dihedral_types)
     {
+    // transfer dihedral parameters into shared memory
+    extern __shared__ unsigned char sh[];
+    Scalar4 *s_params = (Scalar4 *)(&sh[0]);
+    
+    for (unsigned int cur_offset = 0; cur_offset < n_dihedral_types; cur_offset += blockDim.x)
+        {
+        if (cur_offset + threadIdx.x < n_dihedral_types)
+            {
+                Scalar4 params = texFetchScalar4(d_params, dihedral_params_tex, cur_offset + threadIdx.x);
+                s_params[cur_offset + threadIdx.x] = params;
+            }
+        }
+    __syncthreads();
+    
     // start by identifying which particle we are to handle
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -208,7 +223,7 @@ void gpu_compute_opls_dihedral_forces_kernel(Scalar4* d_force,
         
         // get values for k1/2 through k4/2 (MEM TRANSFER: 16 bytes)
         // ----- The 1/2 factor is already stored in the parameters --------
-        Scalar4 params = texFetchScalar4(d_params, dihedral_params_tex, cur_dihedral_type);
+        Scalar4 params = s_params[cur_dihedral_type];
         Scalar k1 = params.x;
         Scalar k2 = params.y;
         Scalar k3 = params.z;
@@ -398,7 +413,9 @@ cudaError_t gpu_compute_opls_dihedral_forces(Scalar4* d_force,
         }
 
     // run the kernel
-    gpu_compute_opls_dihedral_forces_kernel<<< grid, threads>>>(d_force, d_virial, virial_pitch, N, d_pos, d_params, box, tlist, dihedral_ABCD, pitch, n_dihedrals_list);
+    unsigned int shared_bytes = n_dihedral_types*sizeof(Scalar4);
+    
+    gpu_compute_opls_dihedral_forces_kernel<<< grid, threads, shared_bytes>>>(d_force, d_virial, virial_pitch, N, d_pos, d_params, box, tlist, dihedral_ABCD, pitch, n_dihedrals_list, n_dihedral_types);
 
     return cudaSuccess;
     }
